@@ -277,8 +277,6 @@ public:
      */
     bool HaveInputs(const CTransaction& tx, bool* fSidechainInputs = NULL) const;
 
-    const CTxOut &GetOutputFor(const CTxIn& input) const;
-
 private:
     CCoinsMap::iterator FetchCoins(const COutPoint &outpoint) const;
 
