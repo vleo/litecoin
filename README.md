@@ -1,9 +1,9 @@
 Litecoin Core integration/staging tree
+Litecoin Drivechain project mainchain branch
 =====================================
 
-[![Build Status](https://travis-ci.org/litecoin-project/litecoin.svg?branch=master)](https://travis-ci.org/litecoin-project/litecoin)
 
-https://litecoin.org
+https://github.com/vleo/litecoin
 
 What is Litecoin?
 ----------------
