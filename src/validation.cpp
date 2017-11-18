@@ -18,6 +18,7 @@
 #include "fs.h"
 #include "hash.h"
 #include "init.h"
+#include "merkleblock.h"
 #include "policy/fees.h"
 #include "policy/policy.h"
 #include "policy/rbf.h"
@@ -29,6 +30,8 @@
 #include "script/script.h"
 #include "script/sigcache.h"
 #include "script/standard.h"
+#include "sidechain.h"
+#include "sidechaindb.h"
 #include "timedata.h"
 #include "tinyformat.h"
 #include "txdb.h"
@@ -86,6 +89,8 @@ CAmount maxTxFee = DEFAULT_TRANSACTION_MAXFEE;
 
 CBlockPolicyEstimator feeEstimator;
 CTxMemPool mempool(&feeEstimator);
+
+SidechainDB scdb;
 
 static void CheckBlockIndex(const Consensus::Params& consensusParams);
 
@@ -351,6 +356,57 @@ static bool IsCurrentForFeeEstimation()
     return true;
 }
 
+void GetSidechainValues(const CTransaction &tx, CAmount& amtSidechainUTXO, CAmount& amtUserInput,
+                        CAmount& amtReturning, CAmount& amtWithdrawn)
+{
+    // Collect coins from inputs
+    std::map<const uint256, CCoins> mapCoinsDeposit;
+    for (const CTxIn& in : tx.vin) {
+        CCoins coins;
+        uint256 hash = in.prevout.hash;
+        if (mapCoinsDeposit.find(hash) == mapCoinsDeposit.end()) {
+            pcoinsTip->GetCoins(hash, coins);
+            mapCoinsDeposit[hash] = coins;
+        }
+    }
+
+    // Count inputs
+    for (auto it = mapCoinsDeposit.begin(); it != mapCoinsDeposit.end(); it++) {
+        for (const CTxOut& out : it->second.vout) {
+            CScript scriptPubKey = out.scriptPubKey;
+            if (HexStr(scriptPubKey) == SIDECHAIN_TEST_SCRIPT_HEX) {
+                amtSidechainUTXO += out.nValue;
+            } else {
+                amtUserInput += out.nValue;
+            }
+        }
+    }
+
+    // Count outputs
+    for (const CTxOut& out : tx.vout) {
+        CScript scriptPubKey = out.scriptPubKey;
+        if (HexStr(scriptPubKey) == SIDECHAIN_TEST_SCRIPT_HEX) {
+            amtReturning += out.nValue;
+        } else {
+            amtWithdrawn += out.nValue;
+        }
+    }
+}
+
+bool CheckBWTHash(const uint256& wtjID, const CTransaction &tx)
+{
+    CMutableTransaction mtx = tx;
+
+    // Remove inputs & change output
+    mtx.vin.clear();
+    mtx.vout.pop_back();
+
+    if (mtx.GetHash() == wtjID)
+        return true;
+
+    return false;
+}
+
 /* Make mempool consistent after a reorg, by re-adding or recursively erasing
  * disconnected block transactions from the mempool, and also removing any
  * other transactions from the mempool that are no longer valid given the new
@@ -476,6 +532,41 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         return state.Invalid(false, REJECT_DUPLICATE, "txn-already-in-mempool");
     }
 
+    // Sidechain deposit / withdraw checks
+    {
+        // TODO be more selective about which transactions have
+        // GetSidechainValues() called on them for efficiency.
+
+        // Get values to and from sidechain
+        CAmount amtSidechainUTXO = CAmount(0);
+        CAmount amtUserInput = CAmount(0);
+        CAmount amtReturning = CAmount(0);
+        CAmount amtWithdrawn = CAmount(0);
+        GetSidechainValues(tx, amtSidechainUTXO, amtUserInput, amtReturning, amtWithdrawn);
+
+        if (amtSidechainUTXO > amtReturning) {
+            // Withdrawal
+
+            // Block sidechain withdrawals from the memory pool.
+            // WT^(s) can only valid when added to a block by miners
+            // not as a loose transaction. When added by miners, WT^
+            // work score will be verified before the block is connected.
+            return state.DoS(100, false, REJECT_INVALID, "sidechain-withdraw-loose");
+        } else {
+            // Deposit
+            // TODO we need some additional logic to determine whether a
+            // sidechain deposit should be accepted into the mempool.
+            //
+            // If there are no other deposits in the mempool for a
+            // particular sidechain the new deposit should be accepted.
+            //
+            // If there are other deposits for a particular sidechain in
+            // the memory pool then each new deposit needs to spend the
+            // previous without creating a situation where the funds will
+            // be locked up (insufficient priority etc).
+        }
+    }
+
     // Check for conflicts with in-memory transactions
     std::set<uint256> setConflicts;
     {
@@ -598,8 +689,21 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
             }
         }
 
+        bool fSpendsBMMRequest = false;
+        for (const CTxIn& txin : tx.vin) {
+            const CCoins *coins = view.AccessCoins(txin.prevout.hash);
+            if (coins->fCriticalData && coins->criticalData.IsBMMRequest()) {
+                // Check maturity
+                if (scdb.CountBlocksAtop(coins->criticalData) < BMM_REQUEST_MATURITY)
+                    return state.Invalid(false, REJECT_INVALID, "bad-txn-immature-bmm-request");
+
+                fSpendsBMMRequest = true;
+                break;
+            }
+        }
+
         CTxMemPoolEntry entry(ptx, nFees, nAcceptTime, chainActive.Height(),
-                              fSpendsCoinbase, nSigOpsCost, lp);
+                              fSpendsCoinbase, fSpendsBMMRequest, nSigOpsCost, lp);
         unsigned int nSize = entry.GetTxSize();
 
         // Check that the transaction doesn't have an excessive number of
@@ -1199,6 +1303,7 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
 bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
+
     return VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata), &error);
 }
 
@@ -1283,6 +1388,12 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 // spent being checked as a part of CScriptCheck.
                 const CScript& scriptPubKey = coin.out.scriptPubKey;
                 const CAmount amount = coin.out.nValue;
+
+                // Check BMM h* request maturity when trying to spend
+                if (coins->fCriticalData && coins->criticalData.IsBMMRequest()) {
+                    if (scdb.CountBlocksAtop(coins->criticalData) < BMM_REQUEST_MATURITY)
+                        return state.Invalid(false, REJECT_INVALID, "bad-block-txn-immature-bmm-request");
+                }
 
                 // Verify signature
                 CScriptCheck check(scriptPubKey, amount, tx, i, flags, cacheSigStore, &txdata);
@@ -1746,15 +1857,17 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
+    std::vector<CTransaction> vDepositTx;
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
 
         nInputs += tx.vin.size();
 
+        bool fSidechainInputs = false;
         if (!tx.IsCoinBase())
         {
-            if (!view.HaveInputs(tx))
+            if (!view.HaveInputs(tx, &fSidechainInputs))
                 return state.DoS(100, error("ConnectBlock(): inputs missing/spent"),
                                  REJECT_INVALID, "bad-txns-inputs-missingorspent");
 
@@ -1792,6 +1905,30 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
                 return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
             control.Add(vChecks);
+        }
+
+        if (fSidechainInputs) {
+            // We must get the B-WT^ hash as work is applied to
+            // WT^ before inputs and the change output are known.
+            uint256 hashBWT;
+            if (!tx.GetBWTHash(hashBWT))
+                return error("ConnectBlock(): WT^ (full id): %s has invalid format", tx.GetHash().ToString());
+
+            // Check workscore TODO nSidechain
+            if (!scdb.CheckWorkScore(SIDECHAIN_TEST, hashBWT))
+                return error("ConnectBlock(): CheckWorkScore failed for %s", hashBWT.ToString());
+        }
+
+        if (!tx.IsCoinBase() && !fJustCheck) {
+            // Check for sidechain deposits
+            bool fSidechainOutput = false;
+            for (const CTxOut out : tx.vout) {
+                const CScript& scriptPubKey = out.scriptPubKey;
+                if (HexStr(scriptPubKey) == SIDECHAIN_TEST_SCRIPT_HEX)
+                    fSidechainOutput = true;
+            }
+            if (fSidechainOutput)
+                vDepositTx.push_back(tx);
         }
 
         CTxUndo undoDummy;
@@ -1846,6 +1983,9 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
+
+    if (vDepositTx.size())
+        scdb.AddDeposits(vDepositTx);
 
     int64_t nTime5 = GetTimeMicros(); nTimeIndex += nTime5 - nTime4;
     LogPrint(BCLog::BENCH, "    - Index writing: %.2fms [%.2fs]\n", 0.001 * (nTime5 - nTime4), nTimeIndex * 0.000001);
@@ -2639,6 +2779,24 @@ static bool ReceivedBlockTransactions(const CBlock &block, CValidationState& sta
     if (IsWitnessEnabled(pindexNew->pprev, consensusParams)) {
         pindexNew->nStatus |= BLOCK_OPT_WITNESS;
     }
+
+    // Update coinbase cache if we should
+    if (chainActive.Height() >= COINBASE_CACHE_HEIGHT) {
+        pindexNew->fCoinbase = true;
+        pindexNew->coinbase = block.vtx[0];
+        nCoinbaseCached++;
+
+        if (nCoinbaseCached >= COINBASE_CACHE_TARGET + COINBASE_CACHE_PRUNE_DELAY)
+            PruneCoinbaseCache();
+
+        // Update / synchronize SCDB
+        std::string strError = "";
+        if (!scdb.Update(chainActive.Height(), block.GetHash(), block.vtx[0]->vout, strError))
+            LogPrintf("SCDB failed to update with block: %s\n", block.GetHash().ToString());
+        if (strError != "")
+            LogPrintf("SCDB update error: %s\n", strError);
+    }
+
     pindexNew->RaiseValidity(BLOCK_VALID_TRANSACTIONS);
     setDirtyBlockIndex.insert(pindexNew);
 
@@ -2672,7 +2830,6 @@ static bool ReceivedBlockTransactions(const CBlock &block, CValidationState& sta
             mapBlocksUnlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
         }
     }
-
     return true;
 }
 
@@ -2898,6 +3055,67 @@ std::vector<unsigned char> GenerateCoinbaseCommitment(CBlock& block, const CBloc
     return commitment;
 }
 
+CScript GenerateCriticalHashCommitment(const CCriticalData& criticalData)
+{
+    // TODO
+    // check consensusParams.vDeployments[Consensus::DEPLOYMENT_DRIVECHAINS]
+    CScript script;
+
+    // Add script header
+    script << OP_RETURN;
+    script.push_back(0x48);
+    script.push_back(0x61);
+    script.push_back(0x73);
+    script.push_back(0x68);
+
+    // Add h*
+    script << ToByteVector(criticalData.hashCritical);
+
+    // Add bytes (optional)
+    if (!criticalData.bytes.empty())
+        script << criticalData.bytes;
+
+    return script;
+}
+
+CScript GenerateSCDBHashMerkleRootCommitment(const uint256& hashMerkleRoot)
+{
+    // TODO
+    // check consensusParams.vDeployments[Consensus::DEPLOYMENT_DRIVECHAINS]
+    CScript script;
+
+    // Add script header
+    script << OP_RETURN;
+    script.push_back(0x43);
+    script.push_back(0x50);
+    script.push_back(0x50);
+    script.push_back(0x53);
+
+    // Add SCDB hashMerkleRoot
+    script << ToByteVector(hashMerkleRoot);
+
+    return script;
+}
+
+CScript GenerateWTPrimeHashCommitment(const uint256& hashWTPrime)
+{
+    // TODO
+    // check consensusParams.vDeployments[Consensus::DEPLOYMENT_DRIVECHAINS]
+    CScript script;
+
+    // Add script header
+    script << OP_RETURN;
+    script.push_back(0x53);
+    script.push_back(0x50);
+    script.push_back(0x50);
+    script.push_back(0x43);
+
+    // Add SCDB hashMerkleRoot
+    script << ToByteVector(hashWTPrime);
+
+    return script;
+}
+
 /** Context-dependent validity checks.
  *  By "context", we mean only the previous block headers, but not the UTXO
  *  set; UTXO-related validity checks are done in ConnectBlock(). */
@@ -3022,6 +3240,52 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-weight", false, strprintf("%s : weight limit failed", __func__));
     }
 
+
+    // Check critical data transactions (outputs, not spending)
+    if (true /* TODO versionbits */) {
+        for (const auto& tx: block.vtx) {
+            // Look for transactions with non-null CCriticalData
+            if (!tx->criticalData.IsNull()) {
+                // Check block height
+                // TODO use checker.CheckLockTime()
+                if (nHeight != tx->nLockTime)
+                    return false;
+
+                // TODO move?
+                // Check size of critical data extra bytes
+                if (tx->criticalData.bytes.size() > MAX_CRITICAL_DATA_BYTES)
+                    return false;
+
+                // Check for hashCritical commitment in coinbase
+                bool fFound = false;
+                for (const CTxOut& out : block.vtx[0]->vout) {
+                    const CScript &scriptPubKey = out.scriptPubKey;
+                    if (scriptPubKey.IsCriticalHashCommit()) {
+                        CScript::const_iterator phash = scriptPubKey.begin() + 5;
+                        opcodetype opcode;
+                        std::vector<unsigned char> vchHash;
+                        if (!scriptPubKey.GetOp(phash, opcode, vchHash))
+                            continue;
+                        if (vchHash.size() != sizeof(uint256))
+                            continue;
+
+                        uint256 hashCritical = uint256(uint256(vchHash));
+                        if (hashCritical.IsNull())
+                            continue;
+
+                        if (hashCritical == tx->criticalData.hashCritical) {
+                            fFound = true;
+                            break;
+                        }
+                    }
+                }
+                // Did we find hashCritical?
+                if (!fFound) {
+                    return false;
+                }
+            }
+        }
+    }
     return true;
 }
 
@@ -4378,6 +4642,27 @@ void DumpMempool(void)
     }
 }
 
+void PruneCoinbaseCache()
+{
+    if (nCoinbaseCached <= COINBASE_CACHE_TARGET)
+        return;
+
+    int nHeight = chainActive.Height() + 1;
+    int nPruneBegin = nHeight - nCoinbaseCached;
+    int nPruneEnd = nPruneBegin + (nCoinbaseCached - COINBASE_CACHE_TARGET);
+    if (nPruneBegin < 0)
+        return;
+
+    for (int i = nPruneBegin; i <= nPruneEnd; i++) {
+        // Block index no longer caches coinbase
+        if (chainActive[i]->fCoinbase)
+            chainActive[i]->fCoinbase = false;
+
+        setDirtyBlockIndex.insert(chainActive[i]);
+        nCoinbaseCached--;
+    }
+}
+
 //! Guess how far we are in the verification process at the given block index
 double GuessVerificationProgress(const ChainTxData& data, CBlockIndex *pindex) {
     if (pindex == nullptr)
@@ -4394,6 +4679,58 @@ double GuessVerificationProgress(const ChainTxData& data, CBlockIndex *pindex) {
     }
 
     return pindex->nChainTx / fTxTotal;
+}
+
+bool GetTxOutProof(const uint256& txid, const uint256& hashBlock, std::string& strProof)
+{
+    LOCK(cs_main);
+
+    CBlockIndex* pblockindex = NULL;
+
+    if (!mapBlockIndex.count(hashBlock))
+        return false;
+    pblockindex = mapBlockIndex[hashBlock];
+
+    CBlock block;
+    if(!ReadBlockFromDisk(block, pblockindex, Params().GetConsensus()))
+        return false;
+
+    bool fTxFound = false;
+    for (const auto& tx : block.vtx)
+        if (tx->GetHash() == txid)
+            fTxFound = true;
+
+    if (!fTxFound)
+        return false;
+
+    std::set<uint256> setTxids;
+    setTxids.insert(txid);
+
+    CDataStream ssMB(SER_NETWORK, PROTOCOL_VERSION);
+    CMerkleBlock mb(block, setTxids);
+    ssMB << mb;
+    strProof = HexStr(ssMB.begin(), ssMB.end());
+
+    return true;
+}
+
+bool VerifyTxOutProof(const std::string& strProof)
+{
+    CDataStream ssMB(ParseHex(strProof), SER_NETWORK, PROTOCOL_VERSION);
+    CMerkleBlock merkleBlock;
+    ssMB >> merkleBlock;
+
+    std::vector<uint256> vMatch;
+    std::vector<unsigned int> vIndex;
+    if (merkleBlock.txn.ExtractMatches(vMatch, vIndex) != merkleBlock.header.hashMerkleRoot)
+        return false;
+
+    LOCK(cs_main);
+
+    if (!mapBlockIndex.count(merkleBlock.header.GetHash()) || !chainActive.Contains(mapBlockIndex[merkleBlock.header.GetHash()]))
+        return false;
+
+    return true;
 }
 
 class CMainCleanup

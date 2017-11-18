@@ -129,6 +129,12 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "logging", 0, "include" },
     { "logging", 1, "exclude" },
     { "disconnectnode", 1, "nodeid" },
+    { "createcriticaldatatx", 0, "amount" },
+    { "createcriticaldatatx", 1, "height" },
+    { "listsidechaindeposits", 0, "nsidechain" },
+    { "receivewtprime", 0, "nsidechain" },
+    { "receivewtprimeupdate", 0, "height" },
+    { "receivewtprimeupdate", 1, "update" },
     // Echo with conversion (For testing only)
     { "echojson", 0, "arg0" },
     { "echojson", 1, "arg1" },
