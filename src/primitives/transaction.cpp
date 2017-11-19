@@ -55,8 +55,7 @@ std::string CTxOut::ToString() const
 }
 
 CMutableTransaction::CMutableTransaction() : nVersion(CTransaction::CURRENT_VERSION), nLockTime(0) {}
-CMutableTransaction::CMutableTransaction(const CTransaction& tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime) {}
-
+CMutableTransaction::CMutableTransaction(const CTransaction& tx) : vin(tx.vin), vout(tx.vout), criticalData(tx.criticalData), nVersion(tx.nVersion), nLockTime(tx.nLockTime) {}
 uint256 CMutableTransaction::GetHash() const
 {
     return SerializeHash(*this, SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
@@ -75,10 +74,29 @@ uint256 CTransaction::GetWitnessHash() const
     return SerializeHash(*this, SER_GETHASH, 0);
 }
 
+bool CTransaction::GetBWTHash(uint256& hashRet) const
+{
+    CMutableTransaction mtx(*this);
+    if (!mtx.vin.size() || !mtx.vout.size())
+        return false;
+
+    // This is the format the sidechain must use for vin[0]
+    mtx.vin.resize(1);
+    mtx.vin[0].scriptSig = CScript() << OP_0;
+
+    // Remove the sidechain change return
+    mtx.vout.pop_back();
+
+    // We now have the B-WT^ hash
+    hashRet = mtx.GetHash();
+
+    return true;
+}
+
 /* For backward compatibility, the hash is initialized to 0. TODO: remove the need for this default constructor entirely. */
-CTransaction::CTransaction() : nVersion(CTransaction::CURRENT_VERSION), vin(), vout(), nLockTime(0), hash() {}
-CTransaction::CTransaction(const CMutableTransaction &tx) : nVersion(tx.nVersion), vin(tx.vin), vout(tx.vout), nLockTime(tx.nLockTime), hash(ComputeHash()) {}
-CTransaction::CTransaction(CMutableTransaction &&tx) : nVersion(tx.nVersion), vin(std::move(tx.vin)), vout(std::move(tx.vout)), nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+CTransaction::CTransaction() : vin(), vout(), criticalData(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0), hash() {}
+CTransaction::CTransaction(const CMutableTransaction &tx) : vin(tx.vin), vout(tx.vout), criticalData(tx.criticalData), nVersion(tx.nVersion), nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+CTransaction::CTransaction(CMutableTransaction &&tx) : vin(std::move(tx.vin)), vout(std::move(tx.vout)), criticalData(tx.criticalData), nVersion(tx.nVersion), nLockTime(tx.nLockTime), hash(ComputeHash()) {}
 
 CAmount CTransaction::GetValueOut() const
 {
@@ -111,5 +129,10 @@ std::string CTransaction::ToString() const
         str += "    " + tx_in.scriptWitness.ToString() + "\n";
     for (const auto& tx_out : vout)
         str += "    " + tx_out.ToString() + "\n";
+    if (!criticalData.IsNull()) {
+        str += strprintf("Critical Data:\nbytes=%s\nhashCritical=%s",
+        std::string(criticalData.bytes.begin(), criticalData.bytes.end()),
+        criticalData.hashCritical.ToString());
+    }
     return str;
 }
