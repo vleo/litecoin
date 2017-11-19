@@ -485,7 +485,6 @@ public:
         return *this;
     }
 
-
     bool GetOp(iterator& pc, opcodetype& opcodeRet, std::vector<unsigned char>& vchRet)
     {
          // Wrapper so it can be called with either iterator or const_iterator
@@ -636,6 +635,11 @@ public:
     bool IsPayToScriptHash() const;
     bool IsPayToWitnessScriptHash() const;
     bool IsWitnessProgram(int& version, std::vector<unsigned char>& program) const;
+
+    /** Script formats for Drivechains */
+    bool IsCriticalHashCommit() const;
+    bool IsSCDBHashMerkleRootCommit() const;
+    bool IsWTPrimeHashCommit() const;
 
     /** Called by IsStandardTx and P2SH/BIP62 VerifyScript (which makes it consensus-critical). */
     bool IsPushOnly(const_iterator pc) const;
