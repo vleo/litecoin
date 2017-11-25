@@ -13,7 +13,6 @@
   <component name="ChangeListManager">
     <list default="true" id="3d679d26-39f0-4c68-bf4f-223fc9ef22fb" name="Default" comment="">
       <change type="MODIFICATION" beforePath="$PROJECT_DIR$/src/coins.h" afterPath="$PROJECT_DIR$/src/coins.h" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/src/init.cpp" afterPath="$PROJECT_DIR$/src/init.cpp" />
     </list>
     <ignored path="$PROJECT_DIR$/cmake-build-debug/" />
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
@@ -58,12 +57,12 @@
       <file leaf-file-name="coins.h" pinned="false" current-in-tab="true">
         <entry file="file://$PROJECT_DIR$/src/coins.h">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="810">
-              <caret line="77" column="0" lean-forward="true" selection-start-line="77" selection-start-column="0" selection-end-line="77" selection-end-column="0" />
+            <state relative-caret-position="2186">
+              <caret line="242" column="0" lean-forward="false" selection-start-line="242" selection-start-column="0" selection-end-line="242" selection-end-column="0" />
               <folding>
                 <element signature="e#288#323#0" expanded="true" />
-                <element signature="e#1625#1642#0" expanded="true" />
-                <element signature="e#1867#1884#0" expanded="true" />
+                <element signature="e#6231#6248#0" expanded="true" />
+                <element signature="e#7557#7574#0" expanded="true" />
               </folding>
             </state>
           </provider>
@@ -114,8 +113,8 @@
     </option>
   </component>
   <component name="ProjectFrameBounds">
-    <option name="x" value="86" />
-    <option name="y" value="118" />
+    <option name="x" value="80" />
+    <option name="y" value="105" />
     <option name="width" value="1798" />
     <option name="height" value="1000" />
   </component>
@@ -232,15 +231,15 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1511122672762</updated>
-      <workItem from="1511122675923" duration="5061000" />
+      <workItem from="1511122675923" duration="5684000" />
     </task>
     <servers />
   </component>
   <component name="TimeTrackingManager">
-    <option name="totallyTimeSpent" value="5061000" />
+    <option name="totallyTimeSpent" value="5684000" />
   </component>
   <component name="ToolWindowManager">
-    <frame x="86" y="118" width="1798" height="1000" extended-state="0" />
+    <frame x="80" y="105" width="1798" height="1000" extended-state="0" />
     <editor active="true" />
     <layout>
       <window_info id="TODO" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" show_stripe_button="true" weight="0.33" sideWeight="0.5" order="6" side_tool="false" content_ui="tabs" />
@@ -347,12 +346,12 @@
     </entry>
     <entry file="file://$PROJECT_DIR$/src/coins.h">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="810">
-          <caret line="77" column="0" lean-forward="true" selection-start-line="77" selection-start-column="0" selection-end-line="77" selection-end-column="0" />
+        <state relative-caret-position="2186">
+          <caret line="242" column="0" lean-forward="false" selection-start-line="242" selection-start-column="0" selection-end-line="242" selection-end-column="0" />
           <folding>
             <element signature="e#288#323#0" expanded="true" />
-            <element signature="e#1625#1642#0" expanded="true" />
-            <element signature="e#1867#1884#0" expanded="true" />
+            <element signature="e#6231#6248#0" expanded="true" />
+            <element signature="e#7557#7574#0" expanded="true" />
           </folding>
         </state>
       </provider>
